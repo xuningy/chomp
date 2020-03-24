@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<package>
+  <name>chomp</name>
+  <version>0.0.0</version>
+  <description>The chomp package</description>
+
+  <maintainer email="xuningy@andrew.cmu.edu">Xuning Yang</maintainer>
+
+  <license>TODO</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <build_depend>cpp_utils</build_depend>
+  <build_depend>cv_bridge</build_depend>
+  <build_depend>plan_env</build_depend>
+  <build_depend>parameter_utils</build_depend>
+  <build_depend>roscpp</build_depend>
+
+  <run_depend>cpp_utils</run_depend>
+  <run_depend>cv_bridge</run_depend>
+  <run_depend>plan_env</run_depend>
+  <run_depend>parameter_utils</run_depend>
+  <run_depend>roscpp</run_depend>
+
+</package>

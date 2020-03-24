@@ -1,0 +1,14 @@
+chomp:
+  w_smooth: 1 # weight of the smoothness function
+  w_obs: 100  # weight of the obstacle cost function
+
+  epsilon: 0.05  # distance away from the obstacle that should incur zero cost.
+  eta: 400      # step_size for cgd is 1/eta
+  min_cost_improv_frac: 1e-5 # minimum bound for cost improvement before termination
+  decrease_wt: true
+  progress: 0
+
+  stopping_conditions:
+    max_iter: 100
+    min_iter: 10
+    max_time: 10
