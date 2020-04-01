@@ -17,7 +17,6 @@ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND 
 #include <chomp/Chomp.h>
 
 namespace pu = parameter_utils;
-namespace print = print_utils;
 
 namespace planner {
 
@@ -129,8 +128,6 @@ bool CHOMP::covariantGradientDescent(const CHOMP::EigenMatrixX3d& initial_path, 
   // setup smoothness matrices
   setupAK(N_);
   setupBCE(initial_path.row(0), initial_path.row(N_-1));
-
-  // print::print(initial_path, "initial_path");
 
   // Vector \xi does not contain the initial and end points
   EigenMatrixX3d xi(N_-2, 3);
@@ -251,7 +248,6 @@ double CHOMP::costObstacle(const EigenMatrixX3d& xi, const EigenMatrixX3d& xi_d)
 
   Eigen::VectorXd cost_wpts;
   cost_map_->getPathCost(xi, cost_wpts);
-  // print::print(cost_wpts, "cost_wpts");
 
   // compute approximate time diffs
   EigenMatrixX3d dxdt_N = xi_d.array() * (N+1);
@@ -264,8 +260,6 @@ double CHOMP::costObstacle(const EigenMatrixX3d& xi, const EigenMatrixX3d& xi_d)
 
 double CHOMP::costGuidePath(const EigenMatrixX3d& xi, const EigenMatrixX3d& guide)
 {
-  int N = xi.rows();
-
   auto diff = (xi - guide).rowwise().squaredNorm().array()* w_close_vec_.array();
   double cost =  diff.sum();
 
@@ -334,7 +328,6 @@ CHOMP::EigenMatrixX3d CHOMP::gradCostObstacle(const CHOMP::EigenMatrixX3d& xi, c
   // Compute grad = ||x'|| * (firstterm + cost*kappa)
   EigenMatrixX3d grad = (firstterm - kappa.cwiseProduct(cost.replicate<1, 3>())).cwiseProduct(dxdt_norm.replicate<1, 3>()) * 1/(N+1);
 
-  // print::print(grad, "full gradient");
   return grad;
 }
 

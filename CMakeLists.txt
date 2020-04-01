@@ -6,12 +6,9 @@ set(CMAKE_CXX_FLAGS_RELEASE "-O3 -Wall -g")
 
 
 find_package(catkin REQUIRED COMPONENTS
-    cpp_utils
-    plan_env
     voxblox_ros
 		roscpp
     parameter_utils
-    cv_bridge
 )
 find_package(cmake_modules REQUIRED)
 find_package(Eigen3 REQUIRED)
@@ -20,12 +17,9 @@ catkin_package(
     INCLUDE_DIRS include ${EIGEN3_INCLUDE_DIRS}
     LIBRARIES ${PROJECT_NAME}
     CATKIN_DEPENDS
-      cpp_utils
-      plan_env
       voxblox_ros
 			roscpp
       parameter_utils
-      cv_bridge
 )
 
 include_directories(include

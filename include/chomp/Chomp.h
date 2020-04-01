@@ -23,10 +23,6 @@ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND 
 #include <parameter_utils/ParameterUtils.h>
 #include <visualization_msgs/MarkerArray.h>
 
-
-#include <cpp_utils/print_utils.h>
-#include <plan_env/sdf_map.h>
-
 #include <cost_map/CostMap.h>
 
 namespace planner {
