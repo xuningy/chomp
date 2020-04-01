@@ -21,29 +21,60 @@ namespace print = print_utils;
 
 namespace planner {
 
-void CHOMP::initialize(ros::NodeHandle& nh)
+void CHOMP::initialize(const ros::NodeHandle& nh, const ros::NodeHandle& nh_private)
 {
   pu::get("chomp/w_smooth", w_smooth_, 1.0);
   pu::get("chomp/w_obs", w_obs_, 100.0);
+  pu::get("chomp/w_close", w_close_, 0.0);
+  pu::get("chomp/w_close_end", w_close_end_, 0.0);
+  pu::get("chomp/w_close_linear_taper", w_close_linear_taper_, false);
 
   pu::get("chomp/epsilon", epsilon_, 0.3);
   pu::get("chomp/eta", eta_, 400.0);
-  pu::get("chomp/min_cost_improv_frac", min_cost_improv_frac_, 1e-5);
+  pu::get("chomp/cost_improvement_cutoff", cost_improvement_cutoff_, 1e-5);
   pu::get("chomp/decrease_wt", decrease_wt_, true);
   pu::get("chomp/progress", progress_, 0.0);
 
   pu::get("chomp/stopping_conditions/max_iter", max_iter_, 100);
-  pu::get("chomp/stopping_conditions/min_iter", min_iter_, 10);
   pu::get("chomp/stopping_conditions/max_time", max_time_, 10.0);
 
-  map_initialized_ = false;
-}
+  pu::get("chomp/verbose", verbose_, false);
 
-void CHOMP::initializeCostMap(ros::NodeHandle& nh, std::shared_ptr<SDFMap> sdf_map)
-{
-  cost_map_ = std::make_shared<CostMap>();
-  cost_map_->initialize(nh, sdf_map, epsilon_);
-  // cost_map_->initialize(nh, epsilon_); // for testing 2DFixedCostMap
+  // print parameters
+
+  std::cout << "=================================================" << std::endl;
+  std::cout << "       CHOMP Parameters " << std::endl;
+  std::cout << "=================================================" << std::endl;
+  std::cout << "Weights:" << std::endl;
+  std::cout << "\tSmoothness\t\t" << w_smooth_ << std::endl;
+  std::cout << "\tObstacles\t\t" << w_obs_ << std::endl;
+  std::cout << "\tCloseness to orig. path\t" << w_close_ << std::endl;
+  if (w_close_linear_taper_)
+  {
+    std::cout << "\t   Linear taper enabled; wt scaling along path to " << w_close_end_ << std::endl;
+  }
+
+  // Step size parameters
+  std::cout << "---" << std::endl;
+  std::cout << "epsilon (distance away from the obstacle that would incur zero cost): " << epsilon_ << std::endl;
+  std::cout << "eta: \t\t\t\t" << eta_ << std::endl;
+  std::cout << "step_size (1/eta): \t\t" << 1/eta_ << std::endl;
+  if (decrease_wt_)
+  {
+    std::cout << "decrease weight every iteration: ON\n\tProgress:\t\t" << progress_ << std::endl;
+  } else
+  {
+    std::cout << "decrease weight every iteration: OFF" << std::endl;
+  }
+
+  // Cutoff parameters
+  std::cout << "---" << std::endl;
+  std::cout << "cost improvement cutoff: \t" << cost_improvement_cutoff_ << std::endl;
+  std::cout << "max iter: \t\t\t" << max_iter_ << std::endl;
+  std::cout << "=================================================" << std::endl;
+
+
+  cost_map_ = std::make_shared<CostMap>(nh, nh_private, epsilon_);
 
   map_initialized_ = true;
 }
@@ -89,21 +120,17 @@ bool CHOMP::covariantGradientDescent(const CHOMP::EigenMatrixX3d& initial_path, 
 {
   N_ = initial_path.rows();
 
-
   if (!map_initialized_)
   {
     ROS_ERROR("[CHOMP::covariantGradientDescent] cost_map not available! please initialize cost_map with an esdf.");
     return false;
   }
 
-  // set costmap height
-  cost_map_->setCostMapSliceHeight(initial_path(0, 2));
-
   // setup smoothness matrices
   setupAK(N_);
   setupBCE(initial_path.row(0), initial_path.row(N_-1));
 
-  print::print(initial_path, "initial_path");
+  // print::print(initial_path, "initial_path");
 
   // Vector \xi does not contain the initial and end points
   EigenMatrixX3d xi(N_-2, 3);
@@ -117,15 +144,19 @@ bool CHOMP::covariantGradientDescent(const CHOMP::EigenMatrixX3d& initial_path, 
   EigenMatrixX3d xi_d(N_-2, 3);
   xi_d = approximateDifferentiation(path_notail); // x'
 
-  // compute the initial cost
+  // set the guide path
+  guide_ = xi;
 
-  Eigen::VectorXd cost_wpts;
-  cost_map_->getPathCost(xi, cost_wpts);
-  print::print(cost_wpts, "cost_wpts");
+  // setup linear taper function
+  w_close_vec_.resize(N_-2);
+  if (w_close_linear_taper_) {
+    w_close_vec_.setLinSpaced(N_-2, w_close_, w_close_end_);
+  } else {
+    w_close_vec_.setConstant(w_close_);
+  }
 
-  double cost = w_obs_ * costObstacle(xi, xi_d) + w_smooth_ * costSmoothness(xi);
-
-  std::cout << "initial cost: " << cost << std::endl;
+  // compute the initial cost. If safe, return.
+  double cost = costFunction(xi, xi_d);
 
   if (cost < std::numeric_limits<double>::min())
   {
@@ -133,51 +164,37 @@ bool CHOMP::covariantGradientDescent(const CHOMP::EigenMatrixX3d& initial_path, 
     final_path = initial_path;
     return true;
   }
+
+  // Else, continue.
   std::vector<double> cost_history;
   cost_history.push_back(cost);
 
-  EigenMatrixX3d grad = w_obs_ * gradCostObstacle(xi, xi_d) + w_smooth_ * gradCostSmoothness(xi);
-
-  // Compute cost_gradient term
-  EigenMatrixX3d grad_cost;
-  cost_map_->getPathGradient(xi, grad_cost);
-  print::print(grad_cost, "initial path gradient");
-
-  EigenMatrixX3d grad_obs = gradCostObstacle(xi, xi_d);
-  print::print(grad_obs, "initial cost obstacle");
+  EigenMatrixX3d grad = gradientFunction(xi, xi_d);
 
   // store intermediate paths
   all_paths_.clear();
   auto path_i = initial_path;
   all_paths_.push_back(path_i);
 
-  ROS_INFO("[CHOMP::covariantGradientDescent] starting gradient descent...");
+  ROS_INFO("[CHOMP::covariantGradientDescent] starting gradient descent with initial cost %.3f...", cost);
+  double step_size = 1/eta_;
 
   for (int i = 0; i < max_iter_; i++)
   {
-    std::cout << "[Iter " << i << std::flush;
-    double step_size = 1/eta_;
     if (decrease_wt_ == true)
     {
       step_size = 1/eta_ * (1/std::sqrt(i+1+progress_));
     }
 
     // Gradient descent step
-    xi = xi - step_size * A_inv_ * grad;
-
     EigenMatrixX3d step = step_size * A_inv_ * grad;
-    Eigen::Vector3d step_avg = step.colwise().norm();
-    std::cout << "] step_size: " << step_size << " ... average step: [" << step_avg(0) << ", " << step_avg(1) << ", " << step_avg(2) << std::flush;
+    xi = xi - step;
 
-    Eigen::Vector3d grad_avg = grad.colwise().norm();
-    std::cout << "] ...average grad: [" << grad_avg(0) << ", " << grad_avg(1) << ", " << grad_avg(2) << std::flush;
-
-    // Compute cost and gradient.
-    cost = w_obs_ * costObstacle(xi, xi_d) + w_smooth_ * costSmoothness(xi);
-    grad = w_obs_ * gradCostObstacle(xi, xi_d) + w_smooth_ * gradCostSmoothness(xi);
+    // Compute cost and gradient on new trajectory.
+    cost = costFunction(xi, xi_d);
+    grad = gradientFunction(xi, xi_d);
 
     // Update cost
-    std::cout <<"] ... cost: " << cost << std::flush;
     cost_history.push_back(cost);
 
     // store intermediate path.
@@ -185,12 +202,24 @@ bool CHOMP::covariantGradientDescent(const CHOMP::EigenMatrixX3d& initial_path, 
     all_paths_.push_back(path_i);
 
     // Check if we can terminate
-    if (i >= min_iter_)
-    {
-      std::cout << " ... Cost improvement: " << std::abs(cost_history[i+1] - cost_history[i])/cost_history[i] << std::flush;
-      if (std::abs(cost_history[i+1] - cost_history[i])/cost_history[i] < min_cost_improv_frac_) break;
+    double cost_improvement = std::abs(cost_history[i+1] - cost_history[i])/cost_history[i];
+
+    if (verbose_) {
+      Eigen::Vector3d step_avg = step.colwise().norm();
+      Eigen::Vector3d grad_avg = grad.colwise().norm();
+
+      std::cout << "[Iter " << i << "] step_size: " << step_size << "   average step: [" << step_avg(0) << ", " << step_avg(1) << ", " << step_avg(2) << "]  average grad: [" << grad_avg(0) << ", " << grad_avg(1) << ", " << grad_avg(2) << "]   cost: " << cost << "   cost improvement: " << cost_improvement << std::endl;
     }
-    std::cout << std::endl;
+
+    if (cost_improvement < cost_improvement_cutoff_) {
+      ROS_INFO("[CHOMP::covariantGradientDescent] Success. Path found after %d iterations with cost %.3f", i, cost);
+
+      // construct final path
+      final_path = initial_path;
+      final_path.block(1, 0, N_-2, 3) = xi; // middle block is the updated xi.
+
+      return true;
+    }
 
   }
 
@@ -198,9 +227,11 @@ bool CHOMP::covariantGradientDescent(const CHOMP::EigenMatrixX3d& initial_path, 
   final_path = initial_path;
   final_path.block(1, 0, N_-2, 3) = xi; // middle block is the updated xi.
 
-  ROS_INFO("[CHOMP::covariantGradientDescent] gd success. Path found with cost %.3f", cost);
+  ROS_INFO("[CHOMP::covariantGradientDescent] Exceeded max iteration, terminating with path with cost %.3f", cost);
 
   return true;
+
+
 }
 
 double CHOMP::costSmoothness(const EigenMatrixX3d& xi)
@@ -231,6 +262,17 @@ double CHOMP::costObstacle(const EigenMatrixX3d& xi, const EigenMatrixX3d& xi_d)
   return cost;
 }
 
+double CHOMP::costGuidePath(const EigenMatrixX3d& xi, const EigenMatrixX3d& guide)
+{
+  int N = xi.rows();
+
+  auto diff = (xi - guide).rowwise().squaredNorm().array()* w_close_vec_.array();
+  double cost =  diff.sum();
+
+  return cost;
+}
+
+
 CHOMP::EigenMatrixX3d CHOMP::gradCostSmoothness(const CHOMP::EigenMatrixX3d& xi)
 {
   int N = xi.rows();
@@ -249,16 +291,12 @@ CHOMP::EigenMatrixX3d CHOMP::gradCostObstacle(const CHOMP::EigenMatrixX3d& xi, c
   EigenMatrixX3d hat_dxdt = dxdt_N.rowwise().normalized(); //hat x' = x'/||x'||
   Eigen::VectorXd dxdt_squarednorm = dxdt_N.rowwise().squaredNorm(); //||x'||^2
   Eigen::VectorXd dxdt_norm = dxdt_N.rowwise().norm(); //||x'||
-  // print::print(hat_dxdt, "hat_dxdt");
-  // print::print(dxdt_squarednorm, "dxdt_squarednorm");
 
   // Second time derivatives
-
   EigenMatrixX3d ddxddt(N, 3);
   ddxddt.row(0) = Eigen::Vector3d(0, 0, 0);
   ddxddt.bottomRows(N-1) = approximateDifferentiation(xi_d);
   EigenMatrixX3d ddxddt_N = ddxddt.array() * (N+1);
-  // print::print(ddxddt, "ddxddt");
 
   Eigen::VectorXd cost;
   cost_map_->getPathCost(xi, cost);
@@ -267,71 +305,48 @@ CHOMP::EigenMatrixX3d CHOMP::gradCostObstacle(const CHOMP::EigenMatrixX3d& xi, c
   EigenMatrixX3d grad_cost;
   cost_map_->getPathGradient(xi, grad_cost);
 
-  // Compute grad F_obs piece by piece. The for-loops is because when i tried
-  // to do this with matrix operations it wouldn't compile even though stack
-  // overflow said otherwise. Leaving it for now til I find a fix.
+  // Compute grad F_obs piece by piece.
 
   // kappa_unnormalized = (I − x̂'x̂')x''
-  auto multiplied0 = hat_dxdt.array()*ddxddt_N.array();
-  // print::print(multiplied0, "multiplied0");
-  auto summed0 = multiplied0.rowwise().sum();
-  // print::print(summed0, "summed0");
-  Eigen::MatrixX3d repmatted0(N, 3);
-  repmatted0.col(0) = summed0;
-  repmatted0.col(1) = summed0;
-  repmatted0.col(2) = summed0;
-  // print::print(repmatted0, "repmatted0");
-  Eigen::MatrixX3d k_unnorm_sceond_part = hat_dxdt.array()*repmatted0.array();
-  // print::print(k_unnorm_sceond_part, "k_unnorm_sceond_part");
+  auto temp = (hat_dxdt.array()*ddxddt_N.array()).rowwise().sum();
+  Eigen::MatrixX3d dxdt_ddxddt(N, 3);
+  dxdt_ddxddt.col(0) = temp;
+  dxdt_ddxddt.col(1) = temp;
+  dxdt_ddxddt.col(2) = temp;
+  Eigen::MatrixX3d k_unnorm_second_part = hat_dxdt.array()*dxdt_ddxddt.array();
 
   EigenMatrixX3d kappa_unnormalized(N, 3);
-  // kappa_unnormalized = (ddxddt_N - hat_dxdt * hat_dxdt.transpose() * ddxddt_N);
-  kappa_unnormalized = (ddxddt_N - k_unnorm_sceond_part);
-  // print::print(kappa_unnormalized, "kappa_unnormalized");
+  kappa_unnormalized = (ddxddt_N - k_unnorm_second_part);
 
   // Compute curvature kappa = 1/||x'||^2 * kappa_unnormalized
-  EigenMatrixX3d kappa(N, 3);
-  for (int i = 0; i < N; i++)
-  {
-    kappa.row(i) = kappa_unnormalized.row(i).array() / dxdt_squarednorm(i);
-  }
-  // kappa = kappa.array().rowwise() / dxdt_squarednorm.transpose().array();
-  // print::print(kappa, "kappa");
+  EigenMatrixX3d kappa = kappa_unnormalized.cwiseQuotient(dxdt_squarednorm.replicate<1, 3>());
 
   // Compute firstterm = (I − x̂'x̂')grad_c
-  auto multiplied = hat_dxdt.array()*grad_cost.array();
-  // print::print(multiplied, "multiplied");
-  auto summed = multiplied.rowwise().sum();
-  // print::print(summed, "summed");
-  Eigen::MatrixX3d repmatted(N, 3);
-  repmatted.col(0) = summed;
-  repmatted.col(1) = summed;
-  repmatted.col(2) = summed;
-  // print::print(repmatted, "repmatted");
-  Eigen::MatrixX3d firstterm_secondpart = hat_dxdt.array()*repmatted.array();
-  // print::print(firstterm_secondpart, "firstterm_secondpart");
+  auto temp2 = (hat_dxdt.array()*grad_cost.array()).rowwise().sum();
+  Eigen::MatrixX3d dxdt_gradcost(N, 3);
+  dxdt_gradcost.col(0) = temp2;
+  dxdt_gradcost.col(1) = temp2;
+  dxdt_gradcost.col(2) = temp2;
+  Eigen::MatrixX3d firstterm_secondpart = hat_dxdt.array()*dxdt_gradcost.array();
 
-  // auto firstterm = grad_cost - hat_dxdt * hat_dxdt.transpose() * grad_cost;
   auto firstterm = grad_cost - firstterm_secondpart;
-  // print::print(firstterm, "firstterm");
-
-  // Compute ckappa = cost * kappa
-  EigenMatrixX3d ckappa(N, 3);
-  for (int i = 0; i < N; i++)
-  {
-    ckappa.row(i) = cost(i) * kappa_unnormalized.row(i);
-  }
 
   // Compute grad = ||x'|| * (firstterm + cost*kappa)
-  EigenMatrixX3d grad(N, 3);
-  for (int i = 0; i < N; i++)
-  {
-    grad.row(i) = (firstterm.row(i) + ckappa.row(i)) * dxdt_norm(i) * 1/(N+1);
-  }
-  // auto grad = (firstterm + cost_wpts.array() * kappa.array().rowwise()).array().rowwise() * dxdt_norm.array();
+  EigenMatrixX3d grad = (firstterm - kappa.cwiseProduct(cost.replicate<1, 3>())).cwiseProduct(dxdt_norm.replicate<1, 3>()) * 1/(N+1);
 
   // print::print(grad, "full gradient");
   return grad;
+}
+
+
+CHOMP::EigenMatrixX3d CHOMP::gradCostGuidePath(const EigenMatrixX3d& xi, const EigenMatrixX3d& guide)
+{
+
+  EigenMatrixX3d grad = 2 * (xi - guide);
+
+  EigenMatrixX3d grad_weighted = grad.cwiseProduct(w_close_vec_.replicate<1, 3>());
+
+  return grad_weighted;
 }
 
 CHOMP::EigenMatrixX3d CHOMP::approximateDifferentiation(const CHOMP::EigenMatrixX3d& path)

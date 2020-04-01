@@ -21,8 +21,7 @@ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND 
 #include <Eigen/Eigen>
 #include <ros/ros.h>
 #include <geometry_msgs/PoseStamped.h>
-
-#include <plan_env/sdf_map.h>
+#include <voxblox_ros/esdf_server.h>
 
 namespace planner {
 
@@ -41,12 +40,10 @@ namespace planner {
 class CostMap
 {
 public:
-  CostMap() {}
+  CostMap(const ros::NodeHandle& nh, const ros::NodeHandle& nh_private, double epsilon);
   ~CostMap() {}
 
-  SDFMap::Ptr sdf_map_;
-
-  void initialize(ros::NodeHandle& nh, SDFMap::Ptr map, double epsilon);
+  double getMapDistance(const Eigen::Vector3d& position) const;
 
   bool getPathCost(const Eigen::Matrix<double, Eigen::Dynamic, 3>& path, Eigen::VectorXd& cost);
 
@@ -55,10 +52,14 @@ public:
   bool getPathDist(const Eigen::Matrix<double, Eigen::Dynamic, 3>& path, Eigen::VectorXd& dist);
 
   void setCostMapSliceHeight(double height);
-  
+
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
 private:
+  ros::NodeHandle nh_;
+  ros::NodeHandle nh_private_;
+  voxblox::EsdfServer voxblox_server_;
+
   // Parameters
   double resolution_;
   double resolution_inv_;
@@ -79,6 +80,10 @@ private:
   void publishCostMapCallback(const ros::TimerEvent&);
   ros::Timer cost_map_timer_;
   ros::Publisher cost_map_pub_;
+
+  bool visualize_all_;
+  bool visualize_slice_;
+
 
 };
 

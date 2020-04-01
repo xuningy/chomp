@@ -1,13 +1,14 @@
-cmake_minimum_required(VERSION 2.8.3)
+cmake_minimum_required(VERSION 3.1)
 project(chomp)
 
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++17 -g")
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_FLAGS_RELEASE "-O3 -Wall -g")
 
 
 find_package(catkin REQUIRED COMPONENTS
     cpp_utils
     plan_env
+    voxblox_ros
 		roscpp
     parameter_utils
     cv_bridge
@@ -21,6 +22,7 @@ catkin_package(
     CATKIN_DEPENDS
       cpp_utils
       plan_env
+      voxblox_ros
 			roscpp
       parameter_utils
       cv_bridge

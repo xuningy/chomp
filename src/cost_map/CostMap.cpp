@@ -18,23 +18,62 @@ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND 
 
 namespace planner {
 
-void CostMap::initialize(ros::NodeHandle& nh, std::shared_ptr<SDFMap> sdf_map, double epsilon)
+CostMap::CostMap(const ros::NodeHandle& nh, const ros::NodeHandle& nh_private, double epsilon)
+: nh_(nh),
+  nh_private_(nh_private),
+  voxblox_server_(nh_, nh_private_)
 {
-  sdf_map_ = sdf_map;
-  resolution_ = sdf_map_->getResolution();
+  resolution_ = (double)voxblox_server_.getEsdfMapPtr()->voxel_size();
   resolution_inv_ = 1.0/resolution_;
   epsilon_ = epsilon;
   epsilon_times_half_ = 0.5*epsilon;
   half_divided_by_epsilon_ = 0.5/epsilon;
 
-  ros::NodeHandle n(nh);
-  cost_map_pub_ = n.advertise<sensor_msgs::PointCloud2>("/cost_map", 10);
-  cost_map_timer_ = n.createTimer(ros::Duration(0.05), &CostMap::publishCostMapCallback, this);
+  // setup map
+  double robot_radius = 1.0; //TODO
+  voxblox_server_.setTraversabilityRadius(robot_radius);
+  voxblox_server_.publishTraversable();
 
-  // feel free to replace this.
-  cost_map_slice_height_ = sdf_map_->mp_.esdf_slice_height_;
+  cost_map_slice_height_ = voxblox_server_.getSliceLevel();
+
+  // visualization parameters
+  visualize_all_ = false;
+  visualize_slice_ = true;
+
+  if (visualize_all_ || visualize_slice_)
+  {
+    ros::NodeHandle n(nh);
+    cost_map_pub_ = n.advertise<sensor_msgs::PointCloud2>("/cost_map", 10);
+    cost_map_timer_ = n.createTimer(ros::Duration(0.05), &CostMap::publishCostMapCallback, this);
+  }
+
+  ROS_INFO("[VoxbloxCostMap] Voxblox Cost Map initialized with resolution %.1f. cost map slice height at %.1f", resolution_, cost_map_slice_height_);
 
 }
+
+double CostMap::getMapDistance(const Eigen::Vector3d& position) const {
+  if (!voxblox_server_.getEsdfMapPtr()) {
+    ROS_WARN("[CostMap::getMapDistance] voxblox esdf map pointer is NULL!");
+    return 0.0;
+  }
+
+  if (!voxblox_server_.getEsdfMapPtr()->isObserved(position))
+  {
+    // ROS_WARN("[CostMap::getMapDistance] point (%.2f, %.2f, %.2f) is NOT OBSERVED!", position(0), position(1), position(2));
+    return 0.0;
+  }
+
+  double distance = 0.0;
+  if (!voxblox_server_.getEsdfMapPtr()->getDistanceAtPosition(position,
+                                                              &distance)) {
+    // ROS_WARN("[CostMap::getMapDistance] point (%.2f, %.2f, %.2f) not in map, distance set to zero!", position(0), position(1), position(2));
+
+    return 0.0;
+  }
+
+  return distance;
+}
+
 
 void CostMap::setCostMapSliceHeight(double height)
 {
@@ -57,71 +96,71 @@ double CostMap::cost(double dist)
 }
 
 double CostMap::getCostOfPos(const Eigen::Vector3d& pos) {
-  double dist = sdf_map_->getDistance(pos);
+  double dist = getMapDistance(pos);
   return cost(dist);
 }
 
-double CostMap::getCostOfIdx(const Eigen::Vector3i& id) {
-  double dist = sdf_map_->getDistance(id);
-  return cost(dist);
-}
-
-
-bool CostMap::gradient(const Eigen::Vector3d& x, Eigen::Vector3d& grad)
+bool CostMap::gradient(const Eigen::Vector3d& pos, Eigen::Vector3d& grad)
 {
-  if(!sdf_map_->isInMap(x))
-  {
-    grad.setZero();
-    return false;
-  }
 
   /* use trilinear interpolation */
-  Eigen::Vector3d pos_m = x - 0.5 * resolution_ * Eigen::Vector3d::Ones();
 
-  Eigen::Vector3i idx;
-  sdf_map_->posToIndex(pos_m, idx);
+  // Assuming uniform resolution
+  double delta = resolution_;
+  double xd = delta;
+  double yd = delta;
+  double zd = delta;
+  Eigen::Vector3d diff(xd, yd, zd);
+  Eigen::Vector3d step = diff*2;
 
-  Eigen::Vector3d idx_pos, diff;
-  sdf_map_->indexToPos(idx, idx_pos);
+  Eigen::Vector3d c000 = pos - diff;
 
-  diff = (x - idx_pos) * resolution_inv_;
-
+  // Find the corners of the cube that surrounds the point pos.
   double values[2][2][2];
-  for (int x = 0; x < 2; x++) {
-    for (int y = 0; y < 2; y++) {
-      for (int z = 0; z < 2; z++) {
-        Eigen::Vector3i current_idx = idx + Eigen::Vector3i(x, y, z);
-        values[x][y][z] = getCostOfIdx(current_idx);
+  for (int i = 0; i < 2; i++) {
+    for (int j = 0; j < 2; j++) {
+      for (int k = 0; k < 2; k++) {
+        Eigen::Vector3d cijk = c000 + (Eigen::Array3d(i,j,k)*step.array()).matrix();
+
+        values[i][j][k] = getCostOfPos(cijk);
       }
     }
   }
 
-  double v00 = (1 - diff[0]) * values[0][0][0] + diff[0] * values[1][0][0];
-  double v01 = (1 - diff[0]) * values[0][0][1] + diff[0] * values[1][0][1];
-  double v10 = (1 - diff[0]) * values[0][1][0] + diff[0] * values[1][1][0];
-  double v11 = (1 - diff[0]) * values[0][1][1] + diff[0] * values[1][1][1];
-  double v0 = (1 - diff[1]) * v00 + diff[1] * v10;
-  double v1 = (1 - diff[1]) * v01 + diff[1] * v11;
-  double dist = (1 - diff[2]) * v0 + diff[2] * v1;
+  // Linearly interpolate to find values v1, v0, v00, v01, v10, v11
+  double v00 = (1 - xd) * values[0][0][0] + xd * values[1][0][0];
+  double v01 = (1 - xd) * values[0][0][1] + xd * values[1][0][1];
+  double v10 = (1 - xd) * values[0][1][0] + xd * values[1][1][0];
+  double v11 = (1 - xd) * values[0][1][1] + xd * values[1][1][1];
+  double v0 = (1 - yd) * v00 + yd * v10;
+  double v1 = (1 - yd) * v01 + yd * v11;
+  double dist = (1 - zd) * v0 + zd * v1;
 
   grad[2] = (v1 - v0) * resolution_inv_;
-  grad[1] = ((1 - diff[2]) * (v10 - v00) + diff[2] * (v11 - v01)) * resolution_inv_;
-  grad[0] = (1 - diff[2]) * (1 - diff[1]) * (values[1][0][0] - values[0][0][0]);
-  grad[0] += (1 - diff[2]) * diff[1] * (values[1][1][0] - values[0][1][0]);
-  grad[0] += diff[2] * (1 - diff[1]) * (values[1][0][1] - values[0][0][1]);
-  grad[0] += diff[2] * diff[1] * (values[1][1][1] - values[0][1][1]);
-
+  grad[1] = ((1 - zd) * (v10 - v00) + zd * (v11 - v01)) * resolution_inv_;
+  grad[0] = (1 - zd) * (1 - yd) * (values[1][0][0] - values[0][0][0]);
+  grad[0] += (1 - zd) * yd * (values[1][1][0] - values[0][1][0]);
+  grad[0] += zd * (1 - yd) * (values[1][0][1] - values[0][0][1]);
+  grad[0] += zd * yd * (values[1][1][1] - values[0][1][1]);
   grad[0] *= resolution_inv_;
 
+  return true;
 }
 
 bool CostMap::getPathDist(const Eigen::Matrix<double, Eigen::Dynamic, 3>& path, Eigen::VectorXd& dist)
 {
   dist.resize(path.rows());
-  for (size_t i = 0; i < path.rows(); i++)
+  //
+  // if (!voxblox_server_.getEsdfMapPtr()) {
+  //   return false;
+  // }
+  //
+  // Eigen::VectorXi observed;
+  // voxblox_server_.getEsdfMapPtr()->batchGetDistanceAtPosition(path.transpose(),dist, observed);
+  for (int i = 0; i < path.rows(); i++)
   {
     Eigen::Vector3d point = path.row(i);
-    dist(i) = sdf_map_->getDistance(point);
+    dist(i) = getMapDistance(point);
   }
   return true;
 }
@@ -129,7 +168,7 @@ bool CostMap::getPathDist(const Eigen::Matrix<double, Eigen::Dynamic, 3>& path, 
 bool CostMap::getPathCost(const Eigen::Matrix<double, Eigen::Dynamic, 3>& path, Eigen::VectorXd& cost)
 {
   cost.resize(path.rows());
-  for (size_t i = 0; i < path.rows(); i++)
+  for (int i = 0; i < path.rows(); i++)
   {
     cost(i) = getCostOfPos(path.row(i));
   }
@@ -139,58 +178,61 @@ bool CostMap::getPathCost(const Eigen::Matrix<double, Eigen::Dynamic, 3>& path, 
 bool CostMap::getPathGradient(const Eigen::Matrix<double, Eigen::Dynamic, 3>& path, Eigen::Matrix<double, Eigen::Dynamic, 3>& grad_along_path)
 {
   grad_along_path.resize(path.rows(), 3);
-  for (size_t i = 0; i < path.rows(); i++)
+  for (int i = 0; i < path.rows(); i++)
   {
     Eigen::Vector3d grad(0, 0, 0);
     if (!gradient(path.row(i), grad))
     {
-      ROS_WARN("[CostMap::gradient] Point (%.2f, %.2f %.2f) is outside of the map. Gradient is set to zero.");
+      ROS_WARN("[CostMap::gradient] Cannot compute gradient for point (%.2f, %.2f %.2f). Gradient is set to zero.", path(i, 0), path(i, 1), path(i, 2));
     }
     grad_along_path.row(i) = grad;
   }
   return true;
 }
 
-// Visualizes the cost map with Z as the cost, taken at a 2D slice with Z given
-// by sdf_map_->mp_.esdf_slice_height_.
+// Visualizes the cost map
 void CostMap::publishCostMapCallback(const ros::TimerEvent&)
 {
-  double cost;
   pcl::PointCloud<pcl::PointXYZI> cloud;
-  pcl::PointXYZI pt;
 
-  const double min_cost = 0.0;
-  const double max_cost = 3.0;
+  constexpr double min_cost = 0.0;
+  constexpr double max_cost = 15.0;
 
-  Eigen::Vector3i min_cut = sdf_map_->md_.local_bound_min_ -
-      Eigen::Vector3i(sdf_map_->mp_.local_map_margin_, sdf_map_->mp_.local_map_margin_, sdf_map_->mp_.local_map_margin_);
-  Eigen::Vector3i max_cut = sdf_map_->md_.local_bound_max_ +
-      Eigen::Vector3i(sdf_map_->mp_.local_map_margin_, sdf_map_->mp_.local_map_margin_, sdf_map_->mp_.local_map_margin_);
-  sdf_map_->boundIndex(min_cut);
-  sdf_map_->boundIndex(max_cut);
+  if (visualize_all_)
+  {
+    voxblox::createDistancePointcloudFromEsdfLayer(voxblox_server_.getEsdfMapPtr()->getEsdfLayer(), &cloud);
 
-  for (int x = min_cut(0); x <= max_cut(0); ++x)
-    for (int y = min_cut(1); y <= max_cut(1); ++y) {
+    for (size_t i = 0; i < cloud.points.size(); i++)
+    {
+      auto point = cloud.points[i];
+      double cost = getCostOfPos(Eigen::Vector3d(point.x, point.y, point.z));
+      cost = std::min(cost, max_cost);
+      cost = std::max(cost, min_cost);
 
-      Eigen::Vector3d pos;
-      sdf_map_->indexToPos(Eigen::Vector3i(x, y, 1), pos);
-      pos(2) = cost_map_slice_height_;
-
-      cost = getCostOfPos(pos);
-      cost = min(cost, max_cost);
-      cost = max(cost, min_cost);
-
-      pt.x = pos(0);
-      pt.y = pos(1);
-      pt.z = getCostOfPos(pos); // Xuning: use the z axis to display the cost map
-      pt.intensity = (cost - min_cost) / (max_cost - min_cost);
-      cloud.push_back(pt);
+      cloud.points[i].intensity = (cost - min_cost) / (max_cost - min_cost);
     }
+  } else if (visualize_slice_)
+  {
+    constexpr int kZAxisIndex = 2;
+
+    voxblox::createDistancePointcloudFromEsdfLayerSlice(voxblox_server_.getEsdfMapPtr()->getEsdfLayer(), kZAxisIndex, cost_map_slice_height_, &cloud);
+
+    for (size_t i = 0; i < cloud.points.size(); i++)
+    {
+      auto point = cloud.points[i];
+      double cost = getCostOfPos(Eigen::Vector3d(point.x, point.y, point.z));
+      cost = std::min(cost, max_cost);
+      cost = std::max(cost, min_cost);
+
+      cloud.points[i].z = cost; // cost map slice height is the cost value
+      cloud.points[i].intensity = (cost - min_cost) / (max_cost - min_cost);
+    }
+  }
 
   cloud.width = cloud.points.size();
   cloud.height = 1;
   cloud.is_dense = true;
-  cloud.header.frame_id = sdf_map_->mp_.frame_id_;
+  cloud.header.frame_id = "world";
   sensor_msgs::PointCloud2 cloud_msg;
   pcl::toROSMsg(cloud, cloud_msg);
 

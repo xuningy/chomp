@@ -1,14 +1,20 @@
 chomp:
   w_smooth: 1 # weight of the smoothness function
   w_obs: 100  # weight of the obstacle cost function
+  w_close: 5 # weight of the closeness cost function (of the initial point)
+  w_close_end: 0
 
-  epsilon: 0.05  # distance away from the obstacle that should incur zero cost.
-  eta: 400      # step_size for cgd is 1/eta
-  min_cost_improv_frac: 1e-5 # minimum bound for cost improvement before termination
-  decrease_wt: true
+  w_close_linear_taper: true # scale the closeness weight from w_close to w_close_end; otherwise w_close_end not used
+
+  epsilon: 0.3  # distance away from the obstacle that should incur zero cost.
+  eta: 5000      # step_size for cgd is 1/eta
+  cost_improvement_cutoff: 0.001 # minimum bound for cost improvement before termination
+  decrease_wt: false
   progress: 0
 
   stopping_conditions:
     max_iter: 100
-    min_iter: 10
+    min_iter: 2
     max_time: 10
+
+  verbose: false  # how much to print

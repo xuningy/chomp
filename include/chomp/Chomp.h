@@ -47,17 +47,21 @@ public:
 
   std::shared_ptr<CostMap> cost_map_;
 
-  void initialize(ros::NodeHandle& nh);
-  void initializeCostMap(ros::NodeHandle& nh, std::shared_ptr<SDFMap> sdf_map);
+  void initialize(const ros::NodeHandle& nh, const ros::NodeHandle& nh_private);
+  inline double costFunction(const EigenMatrixX3d& xi, const EigenMatrixX3d& xi_d);
+
+  inline EigenMatrixX3d gradientFunction(const EigenMatrixX3d& xi, const EigenMatrixX3d& xi_d);
+
   bool covariantGradientDescent(const EigenMatrixX3d& initial_path, EigenMatrixX3d& final_path);
 
   inline void getIntermediatePaths(std::vector<CHOMP::EigenMatrixX3d>& all_paths);
 
   visualization_msgs::Marker visualizePath(const CHOMP::EigenMatrixX3d& path, const std_msgs::ColorRGBA& color, int i = 0);
 
+
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
-// private:
+private:
 
   int N_;         // Number of waypoints (including initial and final positions)
   Eigen::MatrixXd A_;
@@ -67,30 +71,41 @@ public:
   Eigen::MatrixXd K_;        // Finite diferencing matrix
   Eigen::MatrixXd e_;
 
+  EigenMatrixX3d guide_;    // guide path.
+
   double w_smooth_;
   double w_obs_;
+  double w_close_;
+  double w_close_end_;
+  bool w_close_linear_taper_;
+  Eigen::VectorXd w_close_vec_;
 
   double epsilon_;  // distance away from the obstacle that should incur zero cost in the cost map.
   double eta_;
-  double min_cost_improv_frac_;
+  double cost_improvement_cutoff_;
   bool decrease_wt_;
   double progress_; // decrease stepsize weight.
   int max_iter_;
-  int min_iter_;
   double max_time_;
 
   bool map_initialized_;
 
   std::vector<CHOMP::EigenMatrixX3d> all_paths_;
 
+  bool verbose_;
+
   void setupAK(int N);
   void setupBCE(const Eigen::Vector3d& start, const Eigen::Vector3d& goal);
 
   // Cost functions
   double costSmoothness(const EigenMatrixX3d& xi);
-  double costObstacle(const EigenMatrixX3d& xi, const EigenMatrixX3d& xi_d);
   EigenMatrixX3d gradCostSmoothness(const EigenMatrixX3d& xi);
+
+  double costObstacle(const EigenMatrixX3d& xi, const EigenMatrixX3d& xi_d);
   EigenMatrixX3d gradCostObstacle(const EigenMatrixX3d& xi, const EigenMatrixX3d& xi_d);
+
+  double costGuidePath(const EigenMatrixX3d& xi, const EigenMatrixX3d& guide);
+  EigenMatrixX3d gradCostGuidePath(const EigenMatrixX3d& xi, const EigenMatrixX3d& guide);
 
   EigenMatrixX3d approximateDifferentiation(const EigenMatrixX3d& path);
 
@@ -100,6 +115,29 @@ public:
 inline void CHOMP::getIntermediatePaths(std::vector<CHOMP::EigenMatrixX3d>& all_paths)
 {
   all_paths = all_paths_;
+}
+
+inline double CHOMP::costFunction(const EigenMatrixX3d& xi, const EigenMatrixX3d& xi_d)
+{
+  // Base cost functions are just smoothness and obstacles.
+  double cost = w_obs_ * costObstacle(xi, xi_d)
+               + w_smooth_ * costSmoothness(xi);
+
+  // Additional cost functions
+  if (w_close_ > 0.0 || w_close_end_ > 0.0) cost += costGuidePath(xi, guide_);
+
+  return cost;
+}
+
+inline CHOMP::EigenMatrixX3d CHOMP::gradientFunction(const EigenMatrixX3d& xi, const EigenMatrixX3d& xi_d)
+{
+  EigenMatrixX3d grad = w_obs_ * gradCostObstacle(xi, xi_d)
+                      + w_smooth_ * gradCostSmoothness(xi);
+
+  // Additional cost functions
+  if (w_close_ > 0.0 || w_close_end_ > 0.0) grad += gradCostGuidePath(xi, guide_);
+
+  return grad;
 }
 
 }  // namespace planner
