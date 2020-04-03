@@ -54,6 +54,7 @@ public:
 
   visualization_msgs::Marker visualizePath(const CHOMP::EigenMatrixX3d& path, const std_msgs::ColorRGBA& color, int i = 0);
 
+  bool checkPathSafe(const EigenMatrixX3d& path);
 
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
@@ -83,6 +84,8 @@ private:
   double progress_; // decrease stepsize weight.
   int max_iter_;
   double max_time_;
+
+  double vehicle_radius_;
 
   bool map_initialized_;
 

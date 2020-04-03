@@ -6,9 +6,10 @@ chomp:
 
   w_close_linear_taper: true # scale the closeness weight from w_close to w_close_end; otherwise w_close_end not used
 
-  epsilon: 0.3  # distance away from the obstacle that should incur zero cost.
+  vehicle_radius: 1.0 # vehicle radius.
+  epsilon: 1 # distance away from the obstacle that should incur zero cost.
   eta: 5000      # step_size for cgd is 1/eta
-  cost_improvement_cutoff: 0.001 # minimum bound for cost improvement before termination
+  cost_improvement_cutoff: 0.0001 # minimum bound for cost improvement before termination
   decrease_wt: false
   progress: 0
 

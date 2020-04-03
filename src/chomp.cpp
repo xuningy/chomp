@@ -28,6 +28,7 @@ void CHOMP::initialize(const ros::NodeHandle& nh, const ros::NodeHandle& nh_priv
   pu::get("chomp/w_close_end", w_close_end_, 0.0);
   pu::get("chomp/w_close_linear_taper", w_close_linear_taper_, false);
 
+  pu::get("chomp/vehicle_radius", vehicle_radius_, 1.0);
   pu::get("chomp/epsilon", epsilon_, 0.3);
   pu::get("chomp/eta", eta_, 400.0);
   pu::get("chomp/cost_improvement_cutoff", cost_improvement_cutoff_, 1e-5);
@@ -65,6 +66,9 @@ void CHOMP::initialize(const ros::NodeHandle& nh, const ros::NodeHandle& nh_priv
   {
     std::cout << "decrease weight every iteration: OFF" << std::endl;
   }
+
+  std::cout << "---" << std::endl;
+  std::cout << "vehicle radius: \t\t" << vehicle_radius_ << std::endl;
 
   // Cutoff parameters
   std::cout << "---" << std::endl;
@@ -175,6 +179,7 @@ bool CHOMP::covariantGradientDescent(const CHOMP::EigenMatrixX3d& initial_path, 
 
   ROS_INFO("[CHOMP::covariantGradientDescent] starting gradient descent with initial cost %.3f...", cost);
   double step_size = 1/eta_;
+  double cost_improvement = 1e6;
 
   for (int i = 0; i < max_iter_; i++)
   {
@@ -199,7 +204,7 @@ bool CHOMP::covariantGradientDescent(const CHOMP::EigenMatrixX3d& initial_path, 
     all_paths_.push_back(path_i);
 
     // Check if we can terminate
-    double cost_improvement = std::abs(cost_history[i+1] - cost_history[i])/cost_history[i];
+    cost_improvement = std::abs(cost_history[i+1] - cost_history[i])/cost_history[i];
 
     if (verbose_) {
       Eigen::Vector3d step_avg = step.colwise().norm();
@@ -208,8 +213,16 @@ bool CHOMP::covariantGradientDescent(const CHOMP::EigenMatrixX3d& initial_path, 
       std::cout << "[Iter " << i << "] step_size: " << step_size << "   average step: [" << step_avg(0) << ", " << step_avg(1) << ", " << step_avg(2) << "]  average grad: [" << grad_avg(0) << ", " << grad_avg(1) << ", " << grad_avg(2) << "]   cost: " << cost << "   cost improvement: " << cost_improvement << std::endl;
     }
 
-    if (cost_improvement < cost_improvement_cutoff_) {
-      ROS_INFO("[CHOMP::covariantGradientDescent] Success. Path found after %d iterations with cost %.3f", i, cost);
+    if (cost_improvement < cost_improvement_cutoff_ && checkPathSafe(xi)) {
+      ROS_INFO("[CHOMP::covariantGradientDescent] Success. Non-colliding path found after %d iterations with cost %.3f and cost improvement %.4f", i, cost, cost_improvement);
+
+      // construct final path
+      final_path = initial_path;
+      final_path.block(1, 0, N_-2, 3) = xi; // middle block is the updated xi.
+
+      return true;
+    } else if (cost_improvement < cost_improvement_cutoff_) {
+      ROS_WARN("[CHOMP::covariantGradientDescent] Colliding path found after %d iterations with cost %.3f and cost improvement %.6f, terminating because cost can no longer improve! Proceed with caution!", i, cost, cost_improvement);
 
       // construct final path
       final_path = initial_path;
@@ -224,11 +237,27 @@ bool CHOMP::covariantGradientDescent(const CHOMP::EigenMatrixX3d& initial_path, 
   final_path = initial_path;
   final_path.block(1, 0, N_-2, 3) = xi; // middle block is the updated xi.
 
-  ROS_INFO("[CHOMP::covariantGradientDescent] Exceeded max iteration, terminating with path with cost %.3f", cost);
+  if (checkPathSafe(final_path))
+  {
+    ROS_INFO("[CHOMP::covariantGradientDescent] Exceeded max iteration, terminating with SAFE path with cost %.3f and cost improvement %.4f.", cost, cost_improvement);
+    return true;
+  } else {
+    ROS_WARN("[CHOMP::covariantGradientDescent] Exceeded max iteration, terminating with UNSAFE path with cost %.3f and cost improvement %.4f.", cost, cost_improvement);
+    return false;
+  }
 
-  return true;
+  ROS_ERROR("[CHOMP::covariantGradientDescent] shouldnt reach this point.");
+  return false;
+}
 
+bool CHOMP::checkPathSafe(const EigenMatrixX3d& path)
+{
+ for (int i = 0; i < path.rows(); i++)
+ {
+   if (cost_map_->getMapDistance(path.row(i)) < vehicle_radius_) return false;
+ }
 
+ return true;
 }
 
 double CHOMP::costSmoothness(const EigenMatrixX3d& xi)
