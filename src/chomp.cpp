@@ -250,6 +250,26 @@ bool CHOMP::covariantGradientDescent(const CHOMP::EigenMatrixX3d& initial_path, 
   return false;
 }
 
+fast_planner::NonUniformBspline CHOMP::getBspline(const CHOMP::EigenMatrixX3d path, double dt)
+{
+  // HACK
+  constexpr double max_vel_ = 1.5;
+  constexpr double max_acc_ = 3.0;
+  fast_planner::NonUniformBspline bspline = fast_planner::NonUniformBspline(path, 3, dt);
+  bspline.setPhysicalLimits(max_vel_, max_acc_);
+  bool feasible = bspline.checkFeasibility(false);
+
+  int iter = 0;
+  while (!feasible && iter < 10) {
+    ROS_INFO("[FastPlannerManager::bsplineOptimizer] Bspline not feasible, reallocating time for attempt %d...", iter+1);
+    feasible = bspline.reallocateTime();
+    iter++;
+  }
+
+  return bspline;
+}
+
+
 bool CHOMP::checkPathSafe(const EigenMatrixX3d& path)
 {
  for (int i = 0; i < path.rows(); i++)
@@ -258,6 +278,11 @@ bool CHOMP::checkPathSafe(const EigenMatrixX3d& path)
  }
 
  return true;
+}
+
+bool CHOMP::checkPointSafe(const Eigen::Vector3d& point)
+{
+  return cost_map_->getMapDistance(point) < vehicle_radius_;
 }
 
 double CHOMP::costSmoothness(const EigenMatrixX3d& xi)

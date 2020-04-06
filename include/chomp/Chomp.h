@@ -24,6 +24,7 @@ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND 
 #include <visualization_msgs/MarkerArray.h>
 
 #include <cost_map/CostMap.h>
+#include <bspline_opt/non_uniform_bspline.h>
 
 namespace planner {
 
@@ -55,6 +56,10 @@ public:
   visualization_msgs::Marker visualizePath(const CHOMP::EigenMatrixX3d& path, const std_msgs::ColorRGBA& color, int i = 0);
 
   bool checkPathSafe(const EigenMatrixX3d& path);
+  bool checkPointSafe(const Eigen::Vector3d& point);
+
+  fast_planner::NonUniformBspline getBspline(const CHOMP::EigenMatrixX3d path, double dt);
+
 
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 

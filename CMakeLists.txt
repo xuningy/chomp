@@ -6,6 +6,7 @@ set(CMAKE_CXX_FLAGS_RELEASE "-O3 -Wall -g")
 
 
 find_package(catkin REQUIRED COMPONENTS
+    bspline_opt
     voxblox_ros
 		roscpp
     parameter_utils
@@ -17,6 +18,7 @@ catkin_package(
     INCLUDE_DIRS include ${EIGEN3_INCLUDE_DIRS}
     LIBRARIES ${PROJECT_NAME}
     CATKIN_DEPENDS
+      bspline_opt
       voxblox_ros
 			roscpp
       parameter_utils
