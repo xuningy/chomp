@@ -14,7 +14,7 @@ chomp:
   progress: 0
 
   stopping_conditions:
-    max_iter: 100
+    max_iter: 300
     min_iter: 2
     max_time: 10
 
